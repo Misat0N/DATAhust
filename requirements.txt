@@ -1,0 +1,16 @@
+pandas
+numpy
+scipy
+scikit-learn
+xgboost
+lightgbm
+imbalanced-learn
+shap
+matplotlib
+seaborn
+plotly
+openai
+dashscope
+streamlit
+python-dotenv
+kagglehub
