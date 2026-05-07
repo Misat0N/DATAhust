@@ -1,0 +1,31 @@
+feature,mean_abs_shap
+title__target_encoded,0.01271530198007822
+total_acc__scaled,0.009977348405122755
+earliest_cr_line__target_encoded,0.007592399400472639
+loan_status=Fully Paid,0.003875351662561297
+last_credit_pull_d__target_encoded,0.001156270708702504
+zip_code__target_encoded,0.0007744586773216726
+addr_state__target_encoded,0.00040361505746841427
+dti__scaled,0.00017499357610940933
+revol_bal__scaled,9.494683127850295e-05
+last_pymnt_amnt__scaled,6.237898617982863e-05
+int_rate__scaled,4.1840216517448426e-05
+funded_amnt_inv__scaled,2.5181498378515247e-05
+loan_amnt__scaled,1.4064677059650416e-05
+inq_last_6mths__scaled,7.114322483539582e-06
+next_pymnt_d__target_encoded,1.0944303125143052e-06
+annual_inc__scaled,4.660934209823607e-08
+revol_util__scaled,2.3864209651947028e-09
+purpose__target_encoded,3.6507844924926733e-10
+issue_d__target_encoded,0.0
+total_rec_late_fee__scaled,0.0
+grade=A,0.0
+recoveries__scaled,0.0
+delinq_amnt__scaled,0.0
+grade=G,0.0
+delinq_2yrs__scaled,0.0
+loan_status=Does not meet the credit policy. Status:Charged Off,0.0
+loan_status=Does not meet the credit policy. Status:Fully Paid,0.0
+acc_now_delinq__scaled,0.0
+loan_status=Charged Off,0.0
+last_pymnt_d__target_encoded,0.0
