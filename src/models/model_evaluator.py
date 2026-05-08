@@ -82,8 +82,8 @@ class CreditModelEvaluator:
         self.y_test = np.asarray(y_test)
         self.top_capture_ratio = 0.2
         self.evaluation_results_: Dict[str, Any] | None = None
-
-        self.classes_ = self._resolve_classes(model, self.y_test)
+        self.estimator_classes_ = self._resolve_estimator_classes(model)
+        self.classes_ = self._resolve_classes(self.estimator_classes_, self.y_test)
         self.class_names_ = self._resolve_class_names(class_names, self.classes_)
 
     def evaluate_imbalanced_multiclass(self) -> Dict[str, Any]:
@@ -98,7 +98,9 @@ class CreditModelEvaluator:
         self._ensure_classifier_supports_proba()
 
         y_pred = np.asarray(self.estimator.predict(self.X_test))
-        y_proba = np.asarray(self.estimator.predict_proba(self.X_test), dtype=float)
+        y_proba = self._align_predicted_probabilities(
+            np.asarray(self.estimator.predict_proba(self.X_test), dtype=float)
+        )
         y_test_bin = label_binarize(self.y_test, classes=self.classes_)
 
         if y_test_bin.shape[1] == 1:
@@ -274,7 +276,9 @@ class CreditModelEvaluator:
         """
 
         self._ensure_classifier_supports_proba()
-        y_proba = np.asarray(self.estimator.predict_proba(self.X_test), dtype=float)
+        y_proba = self._align_predicted_probabilities(
+            np.asarray(self.estimator.predict_proba(self.X_test), dtype=float)
+        )
         output_path = FIGURE_DIR / "multiclass_roc_curve.png"
 
         fig, ax = plt.subplots(figsize=(10, 7))
@@ -447,14 +451,57 @@ class CreditModelEvaluator:
             return model.model
         return model
 
-    def _resolve_classes(self, model, y_test: np.ndarray) -> np.ndarray:
-        """Resolve model classes from the wrapper or the target array."""
+    def _resolve_estimator_classes(self, model) -> np.ndarray:
+        """Resolve the class labels exposed by the fitted estimator."""
 
         if hasattr(model, "classes_") and model.classes_ is not None:
             return np.asarray(model.classes_)
         if hasattr(self.estimator, "classes_"):
             return np.asarray(self.estimator.classes_)
-        return np.unique(y_test)
+        return np.array([], dtype=np.asarray(self.y_test).dtype)
+
+    def _resolve_classes(
+        self,
+        estimator_classes: np.ndarray,
+        y_test: np.ndarray,
+    ) -> np.ndarray:
+        """Use the union of fitted and observed labels for robust evaluation."""
+
+        observed_classes = np.unique(y_test)
+        if estimator_classes.size == 0:
+            return observed_classes
+        return np.unique(np.concatenate([np.asarray(estimator_classes), observed_classes]))
+
+    def _align_predicted_probabilities(self, y_proba: np.ndarray) -> np.ndarray:
+        """Align probability columns to the full evaluation class order.
+
+        If the fitted estimator has not seen every label that still appears in
+        `y_test`, scikit-learn metrics can fail when `labels=` includes those
+        unseen classes. Filling the missing class columns with zeros keeps the
+        evaluation stable while still reflecting that the model cannot predict
+        those labels.
+        """
+
+        if y_proba.ndim != 2:
+            raise ValueError("predict_proba output must be a 2D array.")
+        if len(self.estimator_classes_) == 0:
+            if y_proba.shape[1] != len(self.classes_):
+                raise ValueError(
+                    "predict_proba column count does not match resolved class count."
+                )
+            return y_proba
+        if np.array_equal(self.estimator_classes_, self.classes_):
+            return y_proba
+
+        aligned = np.zeros((y_proba.shape[0], len(self.classes_)), dtype=float)
+        class_to_index = {
+            class_label: index for index, class_label in enumerate(self.classes_)
+        }
+        for source_index, class_label in enumerate(self.estimator_classes_):
+            target_index = class_to_index.get(class_label)
+            if target_index is not None:
+                aligned[:, target_index] = y_proba[:, source_index]
+        return aligned
 
     def _resolve_class_names(
         self,
