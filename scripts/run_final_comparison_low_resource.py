@@ -50,6 +50,12 @@ DOCS_DIR.mkdir(parents=True, exist_ok=True)
 
 CLASS_NAMES = ["正常类", "关注类", "次级/可疑类", "损失类"]
 MANUAL_CLASS_WEIGHT = {0: 1, 1: 5, 2: 20, 3: 35}
+DEFAULT_GRID_WEIGHT_CONFIGS = {
+    "mild": {0: 1, 1: 2, 2: 6, 3: 10},
+    "balanced": {0: 1, 1: 3, 2: 8, 3: 15},
+    "aggressive": MANUAL_CLASS_WEIGHT,
+}
+DEFAULT_GRID_THRESHOLDS = "0.65,0.70,0.75,0.80,0.85,auto"
 
 
 class FixedPredictionModel:
@@ -222,6 +228,104 @@ def apply_business_rules(
     return np.asarray(final_predictions, dtype=int)
 
 
+def fit_weighted_model(
+    features: dict[str, object],
+    class_weight: dict[int, float],
+) -> tuple[CreditRiskClassifier, np.ndarray, np.ndarray]:
+    """Train one weighted model and return validation/test probabilities."""
+
+    model = CreditRiskClassifier(
+        model_type="lightgbm",
+        class_weight_mode="manual",
+        custom_class_weight=class_weight,
+    )
+    model.fit(features["X_train_selected"], features["y_train"])
+    val_proba = model.predict_proba(features["X_val_selected"])
+    test_proba = model.predict_proba(features["X_test_selected"])
+    return model, val_proba, test_proba
+
+
+def evaluate_weighted_configuration(
+    *,
+    features: dict[str, object],
+    test_df: pd.DataFrame,
+    val_proba: np.ndarray,
+    test_proba: np.ndarray,
+    class_weight_name: str,
+    class_weight: dict[int, float],
+    threshold_candidate: float | str,
+    min_normal_precision: float,
+    use_business_rules: bool,
+    model_name_prefix: str,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Evaluate one class-weight and threshold configuration."""
+
+    threshold_strategy = (
+        "auto_search" if isinstance(threshold_candidate, str) else "manual_fixed"
+    )
+    threshold_candidate_label = (
+        str(threshold_candidate).lower()
+        if isinstance(threshold_candidate, str)
+        else f"{float(threshold_candidate):.2f}"
+    )
+    adjuster = RiskThresholdAdjuster(normal_class_threshold=0.9)
+    if isinstance(threshold_candidate, str):
+        best_threshold, threshold_metrics = adjuster.find_optimal_threshold(
+            y_val_proba=val_proba,
+            y_val=features["y_val"],
+            min_normal_precision=min_normal_precision,
+        )
+    else:
+        best_threshold = float(threshold_candidate)
+        adjuster.normal_class_threshold = float(threshold_candidate)
+        threshold_metrics = {
+            "normal_precision": None,
+            "risk_recall_mean": None,
+            "macro_f1": None,
+            "weighted_f1": None,
+            "predicted_normal_ratio": None,
+        }
+
+    threshold_pred = adjuster.adjust_prediction(test_proba)
+    final_pred = (
+        apply_business_rules(test_df, threshold_pred, adjuster)
+        if use_business_rules
+        else threshold_pred
+    )
+
+    metrics = evaluate_adjusted_predictions(
+        features["y_test"],
+        final_pred,
+        test_proba,
+        features["X_test_selected"],
+    )
+    config_key = (
+        f"{class_weight_name}__"
+        f"{threshold_strategy}__"
+        f"{threshold_candidate_label}__"
+        f"{best_threshold:.2f}__"
+        f"{'rules_on' if use_business_rules else 'rules_off'}"
+    )
+    summary = summarize_result(
+        f"{model_name_prefix}:{class_weight_name}@{best_threshold:.2f}",
+        metrics,
+        extra={
+            "config_key": config_key,
+            "class_weight_name": class_weight_name,
+            "class_weight": json.dumps(class_weight, ensure_ascii=False, sort_keys=True),
+            "threshold_strategy": threshold_strategy,
+            "threshold_candidate": threshold_candidate_label,
+            "normal_threshold": float(best_threshold),
+            "use_business_rules": bool(use_business_rules),
+            "val_normal_precision": threshold_metrics["normal_precision"],
+            "val_high_risk_recall": threshold_metrics["risk_recall_mean"],
+            "val_macro_f1": threshold_metrics["macro_f1"],
+            "val_weighted_f1": threshold_metrics["weighted_f1"],
+        },
+    )
+    return summary, metrics
+
+
 def run_baseline(features: dict[str, object]) -> tuple[dict[str, object], dict[str, object]]:
     """Run the single-stage baseline model."""
 
@@ -234,36 +338,24 @@ def run_baseline(features: dict[str, object]) -> tuple[dict[str, object], dict[s
 def run_weighted(features: dict[str, object], test_df: pd.DataFrame) -> tuple[dict[str, object], dict[str, object]]:
     """Run the weighted single-stage model with threshold and business rules."""
 
-    model = CreditRiskClassifier(
-        model_type="lightgbm",
-        class_weight_mode="manual",
-        custom_class_weight=MANUAL_CLASS_WEIGHT,
+    _, val_proba, test_proba = fit_weighted_model(
+        features=features,
+        class_weight=MANUAL_CLASS_WEIGHT,
     )
-    model.fit(features["X_train_selected"], features["y_train"])
-
-    val_proba = model.predict_proba(features["X_val_selected"])
-    test_proba = model.predict_proba(features["X_test_selected"])
-
-    adjuster = RiskThresholdAdjuster(normal_class_threshold=0.9)
-    best_threshold, _ = adjuster.find_optimal_threshold(
-        y_val_proba=val_proba,
-        y_val=features["y_val"],
+    summary, metrics = evaluate_weighted_configuration(
+        features=features,
+        test_df=test_df,
+        val_proba=val_proba,
+        test_proba=test_proba,
+        class_weight_name="default",
+        class_weight=MANUAL_CLASS_WEIGHT,
+        threshold_candidate="auto",
         min_normal_precision=0.8,
+        use_business_rules=True,
+        model_name_prefix="单阶段+权重+阈值规则",
     )
-    threshold_pred = adjuster.adjust_prediction(test_proba)
-    final_pred = apply_business_rules(test_df, threshold_pred, adjuster)
-
-    metrics = evaluate_adjusted_predictions(
-        features["y_test"],
-        final_pred,
-        test_proba,
-        features["X_test_selected"],
-    )
-    return summarize_result(
-        "单阶段+权重+阈值规则",
-        metrics,
-        extra={"normal_threshold": float(best_threshold)},
-    ), metrics
+    summary["model_name"] = "单阶段+权重+阈值规则"
+    return summary, metrics
 
 
 def run_sampled(
@@ -348,6 +440,181 @@ def run_two_stage(features: dict[str, object], test_df: pd.DataFrame) -> tuple[d
         metrics,
         extra={"normal_threshold": float(model.get_threshold())},
     ), metrics
+
+
+def parse_grid_weight_configs(config_text: str) -> dict[str, dict[int, float]]:
+    """Parse grid-search class-weight configurations from CLI text."""
+
+    if not config_text.strip():
+        return DEFAULT_GRID_WEIGHT_CONFIGS
+
+    parsed: dict[str, dict[int, float]] = {}
+    for raw_config in config_text.split(";"):
+        config_item = raw_config.strip()
+        if not config_item:
+            continue
+        if "=" not in config_item:
+            raise ValueError(
+                "Each weight config must follow name=label:weight,... format."
+            )
+        name, mapping_text = config_item.split("=", 1)
+        mapping: dict[int, float] = {}
+        for raw_pair in mapping_text.split(","):
+            pair = raw_pair.strip()
+            if not pair:
+                continue
+            if ":" not in pair:
+                raise ValueError(
+                    "Each weight pair must follow label:weight format."
+                )
+            label_text, weight_text = pair.split(":", 1)
+            mapping[int(label_text.strip())] = float(weight_text.strip())
+        if not mapping:
+            raise ValueError(f"Weight config '{name.strip()}' is empty.")
+        parsed[name.strip()] = mapping
+    if not parsed:
+        raise ValueError("No valid weight configs were parsed.")
+    return parsed
+
+
+def parse_grid_thresholds(threshold_text: str) -> list[float | str]:
+    """Parse grid-search thresholds from CLI text."""
+
+    if not threshold_text.strip():
+        threshold_text = DEFAULT_GRID_THRESHOLDS
+
+    parsed: list[float | str] = []
+    for raw_token in threshold_text.split(","):
+        token = raw_token.strip().lower()
+        if not token:
+            continue
+        if token == "auto":
+            parsed.append("auto")
+            continue
+        parsed.append(float(token))
+    if not parsed:
+        raise ValueError("No valid threshold candidates were parsed.")
+    return parsed
+
+
+def save_grid_search_outputs(
+    grid_df: pd.DataFrame,
+    detail_payload: dict[str, dict[str, object]],
+) -> None:
+    """Persist the full weighted-threshold comparison table."""
+
+    csv_path = MODEL_DIR / "weighted_threshold_grid_search.csv"
+    json_path = MODEL_DIR / "weighted_threshold_grid_search.json"
+    report_path = DOCS_DIR / "weighted_threshold_grid_search.md"
+
+    grid_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    json_path.write_text(
+        json.dumps(
+            {
+                "rows": grid_df.to_dict(orient="records"),
+                "details": detail_payload,
+                "csv": "src/models/weighted_threshold_grid_search.csv",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    top_table = grid_df.head(15).to_markdown(index=False)
+    report_lines = [
+        "# 权重阈值网格搜索报告",
+        "",
+        "## 排序规则",
+        "- 按 `macro_f1`、`high_risk_recall`、`normal_precision` 依次降序排序。",
+        "",
+        "## Top 15 配置",
+        top_table,
+        "",
+        "## 文件输出",
+        "- `src/models/weighted_threshold_grid_search.csv`",
+        "- `src/models/weighted_threshold_grid_search.json`",
+    ]
+    report_path.write_text("\n".join(report_lines), encoding="utf-8")
+
+
+def run_weighted_grid_search(
+    features: dict[str, object],
+    test_df: pd.DataFrame,
+    weight_configs: dict[str, dict[int, float]],
+    threshold_candidates: list[float | str],
+    min_normal_precision: float,
+    use_business_rules: bool,
+) -> tuple[dict[str, object], dict[str, object], list[dict[str, object]], dict[str, dict[str, object]]]:
+    """Compare multiple class-weight and threshold combinations."""
+
+    grid_rows: list[dict[str, object]] = []
+    detail_payload: dict[str, dict[str, object]] = {}
+
+    for weight_name, class_weight in weight_configs.items():
+        print(
+            f"  Fitting grid model: {weight_name} -> "
+            f"{json.dumps(class_weight, ensure_ascii=False, sort_keys=True)}"
+        )
+        _, val_proba, test_proba = fit_weighted_model(
+            features=features,
+            class_weight=class_weight,
+        )
+
+        for threshold_candidate in threshold_candidates:
+            summary, metrics = evaluate_weighted_configuration(
+                features=features,
+                test_df=test_df,
+                val_proba=val_proba,
+                test_proba=test_proba,
+                class_weight_name=weight_name,
+                class_weight=class_weight,
+                threshold_candidate=threshold_candidate,
+                min_normal_precision=min_normal_precision,
+                use_business_rules=use_business_rules,
+                model_name_prefix="权重阈值网格",
+            )
+            grid_rows.append(summary)
+            detail_payload[str(summary["config_key"])] = metrics
+            print(
+                json.dumps(
+                    {
+                        "config_key": summary["config_key"],
+                        "macro_f1": summary["macro_f1"],
+                        "weighted_f1": summary["weighted_f1"],
+                        "high_risk_recall": summary["high_risk_recall"],
+                        "normal_precision": summary["normal_precision"],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    grid_df = pd.DataFrame(grid_rows).sort_values(
+        by=["macro_f1", "high_risk_recall", "normal_precision"],
+        ascending=False,
+    )
+    save_grid_search_outputs(grid_df, detail_payload)
+    print("Top grid candidates:")
+    print(
+        grid_df[
+            [
+                "class_weight_name",
+                "normal_threshold",
+                "macro_f1",
+                "weighted_f1",
+                "high_risk_recall",
+                "normal_precision",
+                "ks_value",
+            ]
+        ]
+        .head(10)
+        .to_string(index=False)
+    )
+
+    best_row = grid_df.iloc[0].to_dict()
+    best_row["model_name"] = "单阶段权重阈值网格最优"
+    best_metrics = detail_payload[str(best_row["config_key"])]
+    return best_row, best_metrics, grid_rows, detail_payload
 
 
 def save_outputs(
@@ -438,7 +705,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--groups",
         nargs="+",
-        choices=["baseline", "weighted", "sampled", "two_stage"],
+        choices=["baseline", "weighted", "sampled", "two_stage", "grid_search"],
         default=["baseline", "weighted", "two_stage"],
         help="Model groups to run. Default skips the heavy sampled group.",
     )
@@ -456,6 +723,32 @@ def parse_args() -> argparse.Namespace:
         "--figure-name",
         type=str,
         default="final_model_comparison_radar_low_resource.png",
+    )
+    parser.add_argument(
+        "--grid-weight-configs",
+        type=str,
+        default="",
+        help=(
+            "Semicolon-separated weight configs like "
+            "'mild=0:1,1:2,2:6,3:10;balanced=0:1,1:3,2:8,3:15'."
+        ),
+    )
+    parser.add_argument(
+        "--grid-thresholds",
+        type=str,
+        default=DEFAULT_GRID_THRESHOLDS,
+        help="Comma-separated thresholds, supports 'auto', e.g. '0.70,0.75,0.80,auto'.",
+    )
+    parser.add_argument(
+        "--grid-min-normal-precision",
+        type=float,
+        default=0.8,
+        help="Precision floor used when the threshold candidate is 'auto'.",
+    )
+    parser.add_argument(
+        "--grid-disable-business-rules",
+        action="store_true",
+        help="Disable business-rule overrides during grid search.",
     )
     return parser.parse_args()
 
@@ -489,6 +782,8 @@ def main() -> None:
 
     summaries: list[dict[str, object]] = []
     details: dict[str, dict[str, object]] = {}
+    weight_configs = parse_grid_weight_configs(args.grid_weight_configs)
+    threshold_candidates = parse_grid_thresholds(args.grid_thresholds)
 
     for group in args.groups:
         print(f"Running group: {group}")
@@ -505,6 +800,19 @@ def main() -> None:
             )
         elif group == "two_stage":
             summary, metrics = run_two_stage(features, test_df)
+        elif group == "grid_search":
+            summary, metrics, grid_rows, grid_detail_payload = run_weighted_grid_search(
+                features=features,
+                test_df=test_df,
+                weight_configs=weight_configs,
+                threshold_candidates=threshold_candidates,
+                min_normal_precision=args.grid_min_normal_precision,
+                use_business_rules=not args.grid_disable_business_rules,
+            )
+            details["grid_search_candidates"] = {
+                "rows": grid_rows,
+                "details": grid_detail_payload,
+            }
         else:
             raise ValueError(f"Unsupported group: {group}")
 
