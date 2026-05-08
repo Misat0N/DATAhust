@@ -1,0 +1,5 @@
+{
+  "version": "preloan_feature_policy_v3_three_class_risk",
+  "description": "Only pre-loan application and bureau fields are allowed as model features.",
+  "risk_scheme": "3_class_normal_risk_loss"
+}

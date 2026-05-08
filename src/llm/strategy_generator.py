@@ -164,7 +164,6 @@ class CreditStrategyGenerator:
             1: "风险预警",
             2: "逾期催收",
             3: "协商还款",
-            4: "协商还款",
         }
         return risk_mapping.get(risk_label, "风险预警")
 

@@ -1,0 +1,8 @@
+{
+  "status": "pending_four_class_rerun",
+  "description": "The previous threshold result is no longer authoritative after switching to the 4_class_merge_23 scheme. Re-run notebooks/08_threshold_rule_optimization.ipynb to overwrite this file.",
+  "best_threshold": 0.9,
+  "search_constraint": {
+    "min_normal_precision": 0.8
+  }
+}

@@ -6,3 +6,10 @@ data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 notebooks/.ipynb_checkpoints/
+src/models/artifacts/*.joblib
+src/models/artifacts/*.pkl
+src/models/artifacts/*.pickle
+src/models/artifacts/*.onnx
+src/models/artifacts/*.pt
+src/models/artifacts/*.pth
+src/models/artifacts/*.h5

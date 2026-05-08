@@ -3,13 +3,20 @@
 This module reads the pre-split ``train.csv``, ``val.csv``, and ``test.csv``
 files from ``data/processed``, constructs:
 
-1. A 5-class pre-loan risk label.
+1. A 4-class pre-loan risk label with merged class 2/3.
 2. A calibrated credit limit label based on requested amount, DTI, income,
    and the risk label.
 3. A 4-class post-loan operational scenario label.
 
 The source files can still be large, so labels are added in chunks and the
 original split files are overwritten only after successful processing.
+
+Important task-definition note
+------------------------------
+The labels in this file are derived from post-origination observations such as
+``loan_status`` and delinquency-related fields. They are valid as supervised
+training targets, but these post-loan fields must never be reused as model
+inputs in the pre-loan risk classification or credit limit estimation tasks.
 """
 
 from __future__ import annotations
@@ -27,9 +34,8 @@ CHUNK_SIZE = 100_000
 RISK_LABEL_NAMES = {
     0: "正常类",
     1: "关注类",
-    2: "次级类",
-    3: "可疑类",
-    4: "损失类",
+    2: "次级/可疑类",
+    3: "损失类",
 }
 
 POST_LOAN_LABEL_NAMES = {
@@ -112,7 +118,19 @@ def estimate_overdue_days(frame: pd.DataFrame) -> pd.Series:
 
 
 def build_risk_labels(frame: pd.DataFrame, overdue_days: pd.Series) -> pd.DataFrame:
-    """Create the 5-class pre-loan risk label."""
+    """Create the formal 4-class pre-loan risk label.
+
+    The label is constructed from observed post-loan performance. This is
+    acceptable for target generation, but the source fields used here must be
+    excluded from model features to avoid target leakage.
+
+    Final mapping
+    -------------
+    - 0: 正常类, no delinquency and no realized loss signal.
+    - 1: 关注类, delinquency bucket from 1 to 30 days.
+    - 2: 次级/可疑类, merged delinquency bucket from 31 to 180 days.
+    - 3: 损失类, charged-off / default / settlement / recoveries / >180 DPD.
+    """
 
     status = normalize_status_series(frame)
     recoveries = get_numeric_series(frame, "recoveries", default=0.0)
@@ -128,10 +146,8 @@ def build_risk_labels(frame: pd.DataFrame, overdue_days: pd.Series) -> pd.DataFr
     )
 
     risk_label = np.zeros(len(frame), dtype=int)
-
     risk_label[(overdue_days >= 1) & (overdue_days <= 30)] = 1
-    risk_label[(overdue_days >= 31) & (overdue_days <= 90)] = 2
-    risk_label[(overdue_days >= 91) & (overdue_days <= 180)] = 3
+    risk_label[(overdue_days >= 31) & (overdue_days <= 180)] = 2
 
     loss_status_mask = status.isin(
         {
@@ -147,7 +163,7 @@ def build_risk_labels(frame: pd.DataFrame, overdue_days: pd.Series) -> pd.DataFr
         | settlement_status.notna()
         | recoveries.gt(0)
     )
-    risk_label[loss_mask] = 4
+    risk_label[loss_mask] = 3
 
     frame["preloan_risk_label"] = risk_label
     frame["preloan_risk_label_name"] = frame["preloan_risk_label"].map(
@@ -175,11 +191,10 @@ def build_credit_limit_labels(frame: pd.DataFrame) -> pd.DataFrame:
     risk_multiplier_map = {
         0: 1.00,
         1: 0.85,
-        2: 0.70,
-        3: 0.50,
-        4: 0.30,
+        2: 0.55,
+        3: 0.20,
     }
-    risk_multiplier = frame["preloan_risk_label"].map(risk_multiplier_map).fillna(0.30)
+    risk_multiplier = frame["preloan_risk_label"].map(risk_multiplier_map).fillna(0.20)
 
     base_limit = np.minimum(loan_amnt, affordability_limit)
     calibrated_limit = base_limit * risk_multiplier
@@ -224,13 +239,13 @@ def build_post_loan_labels(frame: pd.DataFrame) -> pd.DataFrame:
         hardship_flag.eq("Y")
         | debt_settlement_flag.eq("Y")
         | settlement_status.notna()
-        | risk_label.eq(4)
+        | risk_label.eq(3)
     )
     collection_mask = (~negotiation_mask) & (
-        overdue_days.gt(90) | risk_label.ge(3)
+        overdue_days.gt(30) | risk_label.eq(2)
     )
     warning_mask = (~negotiation_mask) & (~collection_mask) & (
-        overdue_days.gt(0) | risk_label.isin([1, 2])
+        overdue_days.gt(0) | risk_label.eq(1)
     )
 
     post_loan_label[warning_mask] = 1

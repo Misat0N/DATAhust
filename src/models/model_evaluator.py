@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from itertools import combinations
 from pathlib import Path
 from typing import Any, Dict
 
@@ -17,7 +18,6 @@ from sklearn.metrics import (
     f1_score,
     mean_absolute_error,
     mean_squared_error,
-    precision_recall_curve,
     precision_score,
     r2_score,
     recall_score,
@@ -31,34 +31,78 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FIGURE_DIR = PROJECT_ROOT / "results" / "figures"
 FIGURE_DIR.mkdir(parents=True, exist_ok=True)
 
+DEFAULT_CLASS_NAMES = ["正常类", "关注类", "次级/可疑类", "损失类"]
+
+plt.rcParams["font.sans-serif"] = [
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Arial Unicode MS",
+    "Noto Sans CJK SC",
+    "SimHei",
+    "DejaVu Sans",
+]
+plt.rcParams["axes.unicode_minus"] = False
+
 
 class CreditModelEvaluator:
-    """Evaluate and explain a trained credit risk classification model."""
+    """Evaluate classification and regression models in the credit domain.
+
+    The class is backward compatible with the earlier project interface while
+    exposing a new imbalanced-multiclass diagnosis workflow required by the
+    current model review stage.
+    """
 
     def __init__(
         self,
         model,
         X_test: pd.DataFrame | np.ndarray,
         y_test: pd.Series | np.ndarray,
-        bad_label: int | None = None,
-        top_capture_ratio: float = 0.2,
+        class_names: list[str] | None = None,
     ) -> None:
-        """Initialize the evaluator."""
+        """Initialize the evaluator.
+
+        Parameters
+        ----------
+        model:
+            A fitted estimator or a project wrapper that exposes `best_model_`
+            or `model`.
+        X_test:
+            Test feature matrix.
+        y_test:
+            Test labels or regression targets.
+        class_names:
+            Optional display names for classes. If omitted, the evaluator uses
+            the default five-grade credit-risk names and automatically truncates
+            or pads them to match the fitted model classes.
+        """
 
         self.model_wrapper = model
         self.estimator = self._resolve_estimator(model)
         self.X_test = self._ensure_dataframe(X_test)
         self.y_test = np.asarray(y_test)
-        self.classes_ = self._resolve_classes(model, self.y_test)
-        self.bad_label = int(bad_label) if bad_label is not None else int(np.max(self.classes_))
-        self.top_capture_ratio = top_capture_ratio
+        self.top_capture_ratio = 0.2
         self.evaluation_results_: Dict[str, Any] | None = None
 
-    def evaluate_classification(self) -> Dict[str, Any]:
-        """Compute academic and risk-control evaluation metrics."""
+        self.classes_ = self._resolve_classes(model, self.y_test)
+        self.class_names_ = self._resolve_class_names(class_names, self.classes_)
 
-        y_pred = self.estimator.predict(self.X_test)
-        y_proba = self.estimator.predict_proba(self.X_test)
+    def evaluate_imbalanced_multiclass(self) -> Dict[str, Any]:
+        """Evaluate a classification model for imbalanced multiclass tasks.
+
+        The output prioritizes per-class precision/recall/F1, macro-F1,
+        weighted-F1, multiclass OVO AUC, KS, bad capture rate, and the
+        confusion matrix. Accuracy is kept only as an auxiliary compatibility
+        field for existing project code.
+        """
+
+        self._ensure_classifier_supports_proba()
+
+        y_pred = np.asarray(self.estimator.predict(self.X_test))
+        y_proba = np.asarray(self.estimator.predict_proba(self.X_test), dtype=float)
+        y_test_bin = label_binarize(self.y_test, classes=self.classes_)
+
+        if y_test_bin.shape[1] == 1:
+            y_test_bin = np.hstack([1 - y_test_bin, y_test_bin])
 
         confusion = confusion_matrix(
             self.y_test,
@@ -66,61 +110,228 @@ class CreditModelEvaluator:
             labels=self.classes_,
         )
 
-        y_test_bin = label_binarize(self.y_test, classes=self.classes_)
-        if y_test_bin.shape[1] == 1:
-            y_test_bin = np.hstack([1 - y_test_bin, y_test_bin])
+        report_by_name = classification_report(
+            self.y_test,
+            y_pred,
+            labels=self.classes_,
+            target_names=self.class_names_,
+            output_dict=True,
+            zero_division=0,
+        )
+        report_by_label = classification_report(
+            self.y_test,
+            y_pred,
+            labels=self.classes_,
+            output_dict=True,
+            zero_division=0,
+        )
 
-        per_class_auc = {}
-        for class_index, class_label in enumerate(self.classes_):
-            if len(np.unique(y_test_bin[:, class_index])) < 2:
-                per_class_auc[str(class_label)] = np.nan
-                continue
-            per_class_auc[str(class_label)] = float(
-                roc_auc_score(y_test_bin[:, class_index], y_proba[:, class_index])
-            )
+        auc_per_class = self._compute_ovr_auc_per_class(y_test_bin, y_proba)
+        ks_per_class = self._compute_ks_per_class(y_test_bin, y_proba)
+        capture_per_class = self._compute_bad_capture_per_class(y_test_bin, y_proba)
 
-        ks_value = self._compute_ks(y_proba)
-        bad_rate_capture = self._compute_bad_rate_capture(y_proba)
+        macro_f1 = float(
+            f1_score(self.y_test, y_pred, average="macro", zero_division=0)
+        )
+        weighted_f1 = float(
+            f1_score(self.y_test, y_pred, average="weighted", zero_division=0)
+        )
+        precision_weighted = float(
+            precision_score(self.y_test, y_pred, average="weighted", zero_division=0)
+        )
+        recall_weighted = float(
+            recall_score(self.y_test, y_pred, average="weighted", zero_division=0)
+        )
+
+        dominant_prediction_ratio = float(
+            pd.Series(y_pred).value_counts(normalize=True).max()
+        )
 
         results = {
             "accuracy": float(accuracy_score(self.y_test, y_pred)),
-            "precision_weighted": float(
-                precision_score(
-                    self.y_test,
-                    y_pred,
-                    average="weighted",
-                    zero_division=0,
-                )
-            ),
-            "recall_weighted": float(
-                recall_score(
-                    self.y_test,
-                    y_pred,
-                    average="weighted",
-                    zero_division=0,
-                )
-            ),
-            "f1_weighted": float(
-                f1_score(
-                    self.y_test,
-                    y_pred,
-                    average="weighted",
-                    zero_division=0,
-                )
-            ),
+            "precision_weighted": precision_weighted,
+            "recall_weighted": recall_weighted,
+            "f1_weighted": weighted_f1,
+            "macro_f1": macro_f1,
+            "weighted_f1": weighted_f1,
+            "f1_gap_weighted_minus_macro": float(weighted_f1 - macro_f1),
+            "classification_report": report_by_label,
+            "classification_report_named": report_by_name,
             "confusion_matrix": confusion.tolist(),
-            "classification_report": classification_report(
-                self.y_test,
-                y_pred,
-                output_dict=True,
-                zero_division=0,
+            "auc_roc_per_class": auc_per_class,
+            "auc_roc_ovo_macro": self._compute_multiclass_auc(y_proba, average="macro"),
+            "auc_roc_ovo_weighted": self._compute_multiclass_auc(
+                y_proba,
+                average="weighted",
             ),
-            "auc_roc_per_class": per_class_auc,
-            "ks_value": float(ks_value),
-            "bad_rate_capture": float(bad_rate_capture),
+            "ks_per_class": ks_per_class,
+            "ks_value": float(np.nanmean(list(ks_per_class.values()))),
+            "bad_rate_capture_per_class": capture_per_class,
+            "bad_rate_capture": float(np.nanmean(list(capture_per_class.values()))),
+            "predicted_class_distribution": self._compute_prediction_distribution(y_pred),
+            "true_class_distribution": self._compute_prediction_distribution(self.y_test),
+            "dominant_prediction_ratio": dominant_prediction_ratio,
+            "class_names": self.class_names_,
+            "class_labels": self.classes_.tolist(),
+            "plot_paths": {
+                "confusion_matrix": "results/figures/confusion_matrix_diagnosis.png",
+                "class_metrics": "results/figures/class_metrics_comparison.png",
+                "multiclass_roc_curve": "results/figures/multiclass_roc_curve.png",
+            },
         }
         self.evaluation_results_ = results
         return results
+
+    def evaluate_classification(self) -> Dict[str, Any]:
+        """Backward-compatible wrapper for the classification evaluator."""
+
+        return self.evaluate_imbalanced_multiclass()
+
+    def plot_confusion_matrix(self) -> str:
+        """Plot the confusion matrix diagnosis heatmap.
+
+        The figure is saved to `results/figures/confusion_matrix_diagnosis.png`
+        with raw count annotations in every cell.
+        """
+
+        results = self._ensure_classification_results()
+        matrix = np.asarray(results["confusion_matrix"], dtype=int)
+        output_path = FIGURE_DIR / "confusion_matrix_diagnosis.png"
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        image = ax.imshow(matrix, cmap="Blues")
+        fig.colorbar(image, ax=ax)
+        ax.set_xticks(np.arange(len(self.class_names_)))
+        ax.set_yticks(np.arange(len(self.class_names_)))
+        ax.set_xticklabels(self.class_names_, rotation=30, ha="right")
+        ax.set_yticklabels(self.class_names_)
+        ax.set_xlabel("预测类别")
+        ax.set_ylabel("真实类别")
+        ax.set_title("风险分类混淆矩阵诊断")
+
+        max_value = max(matrix.max(), 1)
+        for row_index in range(matrix.shape[0]):
+            for col_index in range(matrix.shape[1]):
+                text_color = "white" if matrix[row_index, col_index] > max_value / 2 else "black"
+                ax.text(
+                    col_index,
+                    row_index,
+                    f"{matrix[row_index, col_index]:,}",
+                    ha="center",
+                    va="center",
+                    color=text_color,
+                    fontsize=10,
+                )
+
+        fig.tight_layout()
+        fig.savefig(output_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        return "results/figures/confusion_matrix_diagnosis.png"
+
+    def plot_classification_metrics(self) -> str:
+        """Plot per-class precision, recall, and F1 comparison bars."""
+
+        results = self._ensure_classification_results()
+        report = results["classification_report_named"]
+        output_path = FIGURE_DIR / "class_metrics_comparison.png"
+
+        precision_values = []
+        recall_values = []
+        f1_values = []
+        for class_name in self.class_names_:
+            class_result = report.get(class_name, {})
+            precision_values.append(float(class_result.get("precision", 0.0)))
+            recall_values.append(float(class_result.get("recall", 0.0)))
+            f1_values.append(float(class_result.get("f1-score", 0.0)))
+
+        positions = np.arange(len(self.class_names_))
+        bar_width = 0.25
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.bar(positions - bar_width, precision_values, width=bar_width, label="Precision")
+        ax.bar(positions, recall_values, width=bar_width, label="Recall")
+        ax.bar(positions + bar_width, f1_values, width=bar_width, label="F1-Score")
+
+        ax.set_xticks(positions)
+        ax.set_xticklabels(self.class_names_, rotation=25, ha="right")
+        ax.set_ylim(0.0, 1.0)
+        ax.set_ylabel("Score")
+        ax.set_title("各类别 Precision / Recall / F1 对比")
+        ax.legend()
+        ax.grid(axis="y", linestyle="--", alpha=0.3)
+
+        fig.tight_layout()
+        fig.savefig(output_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        return "results/figures/class_metrics_comparison.png"
+
+    def plot_roc_curve_multiclass(self) -> str:
+        """Plot pairwise ROC curves for multiclass diagnosis.
+
+        The core numeric ROC metric remains multiclass OVO AUC, while the plot
+        visualizes every valid class-pair ROC curve to show which boundaries are
+        actually separable.
+        """
+
+        self._ensure_classifier_supports_proba()
+        y_proba = np.asarray(self.estimator.predict_proba(self.X_test), dtype=float)
+        output_path = FIGURE_DIR / "multiclass_roc_curve.png"
+
+        fig, ax = plt.subplots(figsize=(10, 7))
+        plotted_curve_count = 0
+
+        for left_index, right_index in combinations(range(len(self.classes_)), 2):
+            left_label = self.classes_[left_index]
+            right_label = self.classes_[right_index]
+            pair_mask = np.isin(self.y_test, [left_label, right_label])
+
+            if pair_mask.sum() < 2:
+                continue
+
+            pair_y = self.y_test[pair_mask]
+            binary_y = (pair_y == right_label).astype(int)
+            if len(np.unique(binary_y)) < 2:
+                continue
+
+            left_scores = y_proba[pair_mask, left_index]
+            right_scores = y_proba[pair_mask, right_index]
+            pair_scores = right_scores / np.clip(left_scores + right_scores, 1e-12, None)
+
+            fpr, tpr, _ = roc_curve(binary_y, pair_scores)
+            pair_auc = auc(fpr, tpr)
+            ax.plot(
+                fpr,
+                tpr,
+                label=(
+                    f"{self.class_names_[left_index]} vs "
+                    f"{self.class_names_[right_index]} (AUC={pair_auc:.3f})"
+                ),
+            )
+            plotted_curve_count += 1
+
+        if plotted_curve_count == 0:
+            raise ValueError("ROC curves cannot be plotted because valid class pairs are missing.")
+
+        ax.plot([0, 1], [0, 1], linestyle="--", color="gray")
+        ax.set_xlabel("False Positive Rate")
+        ax.set_ylabel("True Positive Rate")
+        ax.set_title("多分类一对一 ROC 曲线")
+        ax.legend(loc="lower right", fontsize=8)
+        ax.grid(alpha=0.3, linestyle="--")
+
+        fig.tight_layout()
+        fig.savefig(output_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        return "results/figures/multiclass_roc_curve.png"
+
+    def plot_evaluation_results(self) -> Dict[str, str]:
+        """Backward-compatible plot wrapper for the main diagnosis figures."""
+
+        return {
+            "confusion_matrix": self.plot_confusion_matrix(),
+            "class_metrics": self.plot_classification_metrics(),
+            "roc_curves": self.plot_roc_curve_multiclass(),
+        }
 
     def evaluate_regression(self) -> Dict[str, Any]:
         """Compute regression metrics and save regression diagnostic plots."""
@@ -146,37 +357,17 @@ class CreditModelEvaluator:
             "mape": float(mape),
             "rmse": float(np.sqrt(mean_squared_error(y_true, y_pred))),
             "r2": float(r2_score(y_true, y_pred)),
-            "prediction_vs_actual_plot": str(scatter_path),
-            "error_distribution_plot": str(error_hist_path),
+            "prediction_vs_actual_plot": "results/figures/credit_scoring_prediction_vs_actual.png",
+            "error_distribution_plot": "results/figures/credit_scoring_error_distribution.png",
         }
         self.evaluation_results_ = results
         return results
 
-    def plot_evaluation_results(self) -> Dict[str, str]:
-        """Plot confusion matrix, ROC curves, and PR curves."""
-
-        y_pred = self.estimator.predict(self.X_test)
-        y_proba = self.estimator.predict_proba(self.X_test)
-        y_test_bin = label_binarize(self.y_test, classes=self.classes_)
-        if y_test_bin.shape[1] == 1:
-            y_test_bin = np.hstack([1 - y_test_bin, y_test_bin])
-
-        confusion_path = FIGURE_DIR / "risk_model_confusion_matrix.png"
-        roc_path = FIGURE_DIR / "risk_model_roc_curves.png"
-        pr_path = FIGURE_DIR / "risk_model_pr_curves.png"
-
-        self._plot_confusion_matrix(y_pred, confusion_path)
-        self._plot_roc_curves(y_test_bin, y_proba, roc_path)
-        self._plot_pr_curves(y_test_bin, y_proba, pr_path)
-
-        return {
-            "confusion_matrix": str(confusion_path),
-            "roc_curves": str(roc_path),
-            "pr_curves": str(pr_path),
-        }
-
     def explain_model(self, X_test: pd.DataFrame | np.ndarray) -> Dict[str, Any]:
         """Run SHAP explainability and save explainability artifacts."""
+
+        if not hasattr(self.estimator, "predict"):
+            raise TypeError("The provided model does not support SHAP explanation.")
 
         feature_frame = self._ensure_dataframe(X_test)
         sample_size = min(500, len(feature_frame))
@@ -185,7 +376,7 @@ class CreditModelEvaluator:
         explainer = shap.Explainer(self.estimator, feature_sample)
         shap_values = explainer(feature_sample)
 
-        target_class_index = self._get_class_index(self.bad_label)
+        target_class_index = self._get_target_class_index()
         shap_matrix = self._extract_class_shap_matrix(shap_values, target_class_index)
         base_value = self._extract_base_value(shap_values, target_class_index)
 
@@ -226,10 +417,26 @@ class CreditModelEvaluator:
             "feature_importance_ranking": importance_frame.head(20).to_dict(
                 orient="records"
             ),
-            "feature_importance_csv": str(importance_csv_path),
-            "summary_plot": str(summary_plot_path),
-            "force_plot": str(force_plot_path),
+            "feature_importance_csv": "results/figures/shap_feature_importance.csv",
+            "summary_plot": "results/figures/shap_summary_plot.png",
+            "force_plot": "results/figures/shap_force_plot.html",
         }
+
+    def _ensure_classifier_supports_proba(self) -> None:
+        """Validate that the estimator is suitable for classification diagnosis."""
+
+        if not hasattr(self.estimator, "predict") or not hasattr(self.estimator, "predict_proba"):
+            raise TypeError(
+                "CreditModelEvaluator classification diagnosis requires a fitted "
+                "classifier that supports both predict() and predict_proba()."
+            )
+
+    def _ensure_classification_results(self) -> Dict[str, Any]:
+        """Return cached classification results or compute them on demand."""
+
+        if self.evaluation_results_ is None or "classification_report" not in self.evaluation_results_:
+            return self.evaluate_imbalanced_multiclass()
+        return self.evaluation_results_
 
     def _resolve_estimator(self, model):
         """Resolve the actual fitted estimator from a wrapper or raw model."""
@@ -249,6 +456,120 @@ class CreditModelEvaluator:
             return np.asarray(self.estimator.classes_)
         return np.unique(y_test)
 
+    def _resolve_class_names(
+        self,
+        class_names: list[str] | None,
+        classes: np.ndarray,
+    ) -> list[str]:
+        """Align class display names with the actual model classes."""
+
+        base_names = list(class_names or DEFAULT_CLASS_NAMES)
+        resolved_names = []
+        for class_label in classes:
+            if isinstance(class_label, (int, np.integer)) and 0 <= int(class_label) < len(base_names):
+                resolved_names.append(base_names[int(class_label)])
+            else:
+                resolved_names.append(f"类别{class_label}")
+
+        if len(resolved_names) < len(classes):
+            for class_label in classes[len(resolved_names):]:
+                resolved_names.append(f"类别{class_label}")
+        return resolved_names
+
+    def _compute_ovr_auc_per_class(
+        self,
+        y_test_bin: np.ndarray,
+        y_proba: np.ndarray,
+    ) -> Dict[str, float]:
+        """Compute one-vs-rest AUC for each class."""
+
+        auc_per_class: Dict[str, float] = {}
+        for class_index, class_name in enumerate(self.class_names_):
+            if len(np.unique(y_test_bin[:, class_index])) < 2:
+                auc_per_class[class_name] = float("nan")
+                continue
+            auc_per_class[class_name] = float(
+                roc_auc_score(y_test_bin[:, class_index], y_proba[:, class_index])
+            )
+        return auc_per_class
+
+    def _compute_multiclass_auc(
+        self,
+        y_proba: np.ndarray,
+        average: str,
+    ) -> float:
+        """Compute macro or weighted multiclass OVO AUC."""
+
+        if len(self.classes_) < 2:
+            return float("nan")
+        if len(self.classes_) == 2:
+            positive_scores = y_proba[:, 1]
+            return float(roc_auc_score(self.y_test, positive_scores))
+        return float(
+            roc_auc_score(
+                self.y_test,
+                y_proba,
+                labels=self.classes_,
+                multi_class="ovo",
+                average=average,
+            )
+        )
+
+    def _compute_ks_per_class(
+        self,
+        y_test_bin: np.ndarray,
+        y_proba: np.ndarray,
+    ) -> Dict[str, float]:
+        """Compute one-vs-rest KS for each class."""
+
+        ks_per_class: Dict[str, float] = {}
+        for class_index, class_name in enumerate(self.class_names_):
+            if len(np.unique(y_test_bin[:, class_index])) < 2:
+                ks_per_class[class_name] = float("nan")
+                continue
+            fpr, tpr, _ = roc_curve(y_test_bin[:, class_index], y_proba[:, class_index])
+            ks_per_class[class_name] = float(np.max(tpr - fpr))
+        return ks_per_class
+
+    def _compute_bad_capture_per_class(
+        self,
+        y_test_bin: np.ndarray,
+        y_proba: np.ndarray,
+    ) -> Dict[str, float]:
+        """Compute top-bucket bad capture ratio for each class."""
+
+        capture_per_class: Dict[str, float] = {}
+        for class_index, class_name in enumerate(self.class_names_):
+            binary_target = y_test_bin[:, class_index]
+            total_positive = int(binary_target.sum())
+            if total_positive == 0:
+                capture_per_class[class_name] = float("nan")
+                continue
+
+            ranking_frame = pd.DataFrame(
+                {
+                    "score": y_proba[:, class_index],
+                    "target": binary_target,
+                }
+            ).sort_values("score", ascending=False)
+
+            top_n = max(1, int(len(ranking_frame) * self.top_capture_ratio))
+            captured = int(ranking_frame.head(top_n)["target"].sum())
+            capture_per_class[class_name] = float(captured / total_positive)
+        return capture_per_class
+
+    def _compute_prediction_distribution(
+        self,
+        labels: np.ndarray,
+    ) -> Dict[str, float]:
+        """Return normalized class distribution keyed by display names."""
+
+        distribution = pd.Series(labels).value_counts(normalize=True)
+        named_distribution: Dict[str, float] = {}
+        for class_label, class_name in zip(self.classes_, self.class_names_):
+            named_distribution[class_name] = float(distribution.get(class_label, 0.0))
+        return named_distribution
+
     def _ensure_dataframe(
         self,
         X: object,
@@ -262,130 +583,12 @@ class CreditModelEvaluator:
             return pd.DataFrame(X, columns=columns)
         raise TypeError("Input features must be a pandas DataFrame or numpy array.")
 
-    def _get_class_index(self, class_label: int) -> int:
-        """Map a class label to its probability column index."""
+    def _get_target_class_index(self) -> int:
+        """Pick the last class as the default target for SHAP class explanation."""
 
-        matching_indices = np.where(self.classes_ == class_label)[0]
-        if len(matching_indices) == 0:
-            raise ValueError(f"Class label {class_label} not found in model classes.")
-        return int(matching_indices[0])
-
-    def _compute_ks(self, y_proba: np.ndarray) -> float:
-        """Compute KS using the bad-class one-vs-rest score."""
-
-        bad_index = self._get_class_index(self.bad_label)
-        bad_scores = y_proba[:, bad_index]
-        y_binary = (self.y_test == self.bad_label).astype(int)
-
-        if len(np.unique(y_binary)) < 2:
-            return 0.0
-
-        fpr, tpr, _ = roc_curve(y_binary, bad_scores)
-        return float(np.max(tpr - fpr))
-
-    def _compute_bad_rate_capture(self, y_proba: np.ndarray) -> float:
-        """Compute bad-rate capture in the top score bucket."""
-
-        bad_index = self._get_class_index(self.bad_label)
-        bad_scores = y_proba[:, bad_index]
-        y_binary = (self.y_test == self.bad_label).astype(int)
-
-        total_bad = int(y_binary.sum())
-        if total_bad == 0:
-            return 0.0
-
-        ranking_frame = pd.DataFrame(
-            {
-                "bad_score": bad_scores,
-                "is_bad": y_binary,
-            }
-        ).sort_values("bad_score", ascending=False)
-
-        top_n = max(1, int(len(ranking_frame) * self.top_capture_ratio))
-        captured_bad = int(ranking_frame.head(top_n)["is_bad"].sum())
-        return float(captured_bad / total_bad)
-
-    def _plot_confusion_matrix(self, y_pred: np.ndarray, output_path: Path) -> None:
-        """Save a confusion matrix heatmap."""
-
-        matrix = confusion_matrix(self.y_test, y_pred, labels=self.classes_)
-        fig, ax = plt.subplots(figsize=(8, 6))
-        image = ax.imshow(matrix, cmap="Blues")
-        fig.colorbar(image, ax=ax)
-        ax.set_xticks(np.arange(len(self.classes_)))
-        ax.set_yticks(np.arange(len(self.classes_)))
-        ax.set_xticklabels(self.classes_)
-        ax.set_yticklabels(self.classes_)
-        ax.set_xlabel("Predicted Label")
-        ax.set_ylabel("True Label")
-        ax.set_title("Confusion Matrix")
-
-        for row_index in range(matrix.shape[0]):
-            for col_index in range(matrix.shape[1]):
-                ax.text(
-                    col_index,
-                    row_index,
-                    matrix[row_index, col_index],
-                    ha="center",
-                    va="center",
-                    color="black",
-                )
-
-        fig.tight_layout()
-        fig.savefig(output_path, dpi=200, bbox_inches="tight")
-        plt.close(fig)
-
-    def _plot_roc_curves(
-        self,
-        y_test_bin: np.ndarray,
-        y_proba: np.ndarray,
-        output_path: Path,
-    ) -> None:
-        """Save one-vs-rest ROC curves for each class."""
-
-        fig, ax = plt.subplots(figsize=(9, 7))
-        for class_index, class_label in enumerate(self.classes_):
-            if len(np.unique(y_test_bin[:, class_index])) < 2:
-                continue
-            fpr, tpr, _ = roc_curve(y_test_bin[:, class_index], y_proba[:, class_index])
-            roc_auc = auc(fpr, tpr)
-            ax.plot(fpr, tpr, label=f"Class {class_label} (AUC={roc_auc:.3f})")
-
-        ax.plot([0, 1], [0, 1], linestyle="--", color="gray")
-        ax.set_xlabel("False Positive Rate")
-        ax.set_ylabel("True Positive Rate")
-        ax.set_title("One-vs-Rest ROC Curves")
-        ax.legend(loc="lower right")
-        fig.tight_layout()
-        fig.savefig(output_path, dpi=200, bbox_inches="tight")
-        plt.close(fig)
-
-    def _plot_pr_curves(
-        self,
-        y_test_bin: np.ndarray,
-        y_proba: np.ndarray,
-        output_path: Path,
-    ) -> None:
-        """Save one-vs-rest precision-recall curves for each class."""
-
-        fig, ax = plt.subplots(figsize=(9, 7))
-        for class_index, class_label in enumerate(self.classes_):
-            if len(np.unique(y_test_bin[:, class_index])) < 2:
-                continue
-            precision, recall, _ = precision_recall_curve(
-                y_test_bin[:, class_index],
-                y_proba[:, class_index],
-            )
-            pr_auc = auc(recall, precision)
-            ax.plot(recall, precision, label=f"Class {class_label} (AUC={pr_auc:.3f})")
-
-        ax.set_xlabel("Recall")
-        ax.set_ylabel("Precision")
-        ax.set_title("One-vs-Rest PR Curves")
-        ax.legend(loc="lower left")
-        fig.tight_layout()
-        fig.savefig(output_path, dpi=200, bbox_inches="tight")
-        plt.close(fig)
+        if len(self.classes_) == 0:
+            raise ValueError("No class labels are available for SHAP explanation.")
+        return int(len(self.classes_) - 1)
 
     def _extract_class_shap_matrix(
         self,

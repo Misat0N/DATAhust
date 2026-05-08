@@ -90,7 +90,7 @@ class CreditScorer:
 
         Constraint rules
         ----------------
-        - Risk grades 3/4: limit = 0
+        - Risk grade 3: limit = 0
         - Risk grade 2: limit <= 3 * monthly disposable income
         - Risk grade 1: limit <= 6 * monthly disposable income
         - Risk grade 0: limit <= 12 * monthly disposable income
@@ -106,7 +106,7 @@ class CreditScorer:
         monthly_income = self._estimate_monthly_disposable_income(X)
 
         constrained_predictions = raw_predictions.copy()
-        constrained_predictions[np.isin(risk_array, [3, 4])] = 0.0
+        constrained_predictions[risk_array == 3] = 0.0
         constrained_predictions[risk_array == 2] = np.minimum(
             constrained_predictions[risk_array == 2],
             monthly_income[risk_array == 2] * 3.0,

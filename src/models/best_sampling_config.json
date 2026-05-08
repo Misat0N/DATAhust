@@ -1,0 +1,9 @@
+{
+  "status": "pending_four_class_rerun",
+  "description": "The sampling configuration should be re-evaluated under the 4_class_merge_23 scheme. Run notebooks/09_sampling_optimization.ipynb to overwrite this file.",
+  "selected_by": "validation_macro_f1_then_high_risk_recall_then_lower_overfit_gap",
+  "optimized_sampler_config": {
+    "sampling_strategy": "auto",
+    "max_oversample_ratio": 5
+  }
+}

@@ -29,6 +29,147 @@ class TargetEncodingStats:
     global_mean: float
 
 
+PRELOAN_FEATURE_WHITELIST = {
+    "acc_now_delinq",
+    "acc_open_past_24mths",
+    "addr_state",
+    "all_util",
+    "annual_inc",
+    "annual_inc_joint",
+    "application_type",
+    "avg_cur_bal",
+    "bc_open_to_buy",
+    "bc_util",
+    "collections_12_mths_ex_med",
+    "delinq_2yrs",
+    "delinq_amnt",
+    "desc",
+    "dti",
+    "dti_joint",
+    "earliest_cr_line",
+    "emp_length",
+    "emp_title",
+    "home_ownership",
+    "il_util",
+    "inq_fi",
+    "inq_last_12m",
+    "inq_last_6mths",
+    "loan_amnt",
+    "max_bal_bc",
+    "mo_sin_old_il_acct",
+    "mo_sin_old_rev_tl_op",
+    "mo_sin_rcnt_rev_tl_op",
+    "mo_sin_rcnt_tl",
+    "mort_acc",
+    "mths_since_last_delinq",
+    "mths_since_last_major_derog",
+    "mths_since_last_record",
+    "mths_since_rcnt_il",
+    "mths_since_recent_bc",
+    "mths_since_recent_bc_dlq",
+    "mths_since_recent_inq",
+    "mths_since_recent_revol_delinq",
+    "num_accts_ever_120_pd",
+    "num_actv_bc_tl",
+    "num_actv_rev_tl",
+    "num_bc_sats",
+    "num_bc_tl",
+    "num_il_tl",
+    "num_op_rev_tl",
+    "num_rev_accts",
+    "num_rev_tl_bal_gt_0",
+    "num_sats",
+    "num_tl_120dpd_2m",
+    "num_tl_30dpd",
+    "num_tl_90g_dpd_24m",
+    "num_tl_op_past_12m",
+    "open_acc",
+    "open_acc_6m",
+    "open_act_il",
+    "open_il_12m",
+    "open_il_24m",
+    "open_rv_12m",
+    "open_rv_24m",
+    "pct_tl_nvr_dlq",
+    "percent_bc_gt_75",
+    "pub_rec",
+    "pub_rec_bankruptcies",
+    "purpose",
+    "pymnt_plan",
+    "revol_bal",
+    "revol_bal_joint",
+    "revol_util",
+    "sec_app_chargeoff_within_12_mths",
+    "sec_app_collections_12_mths_ex_med",
+    "sec_app_earliest_cr_line",
+    "sec_app_inq_last_6mths",
+    "sec_app_mort_acc",
+    "sec_app_mths_since_last_major_derog",
+    "sec_app_num_rev_accts",
+    "sec_app_open_acc",
+    "sec_app_open_act_il",
+    "sec_app_revol_util",
+    "tax_liens",
+    "term",
+    "title",
+    "tot_coll_amt",
+    "tot_cur_bal",
+    "tot_hi_cred_lim",
+    "total_acc",
+    "total_bal_ex_mort",
+    "total_bal_il",
+    "total_bc_limit",
+    "total_cu_tl",
+    "total_il_high_credit_limit",
+    "total_rev_hi_lim",
+    "verification_status",
+    "verification_status_joint",
+    "zip_code",
+}
+
+POSTLOAN_LEAKAGE_EXACT_COLUMNS = {
+    "collection_recovery_fee",
+    "debt_settlement_flag",
+    "hardship_flag",
+    "hardship_type",
+    "hardship_reason",
+    "hardship_status",
+    "hardship_amount",
+    "hardship_start_date",
+    "hardship_end_date",
+    "hardship_length",
+    "hardship_dpd",
+    "last_credit_pull_d",
+    "last_pymnt_amnt",
+    "last_pymnt_d",
+    "loan_status",
+    "next_pymnt_d",
+    "out_prncp",
+    "out_prncp_inv",
+    "payment_plan_start_date",
+    "recoveries",
+    "settlement_amount",
+    "settlement_date",
+    "settlement_percentage",
+    "settlement_status",
+    "total_pymnt",
+    "total_pymnt_inv",
+    "total_rec_int",
+    "total_rec_late_fee",
+    "total_rec_prncp",
+}
+
+POSTLOAN_LEAKAGE_PREFIXES = (
+    "hardship_",
+    "last_pymnt",
+    "next_pymnt",
+    "out_prncp",
+    "settlement_",
+    "total_pymnt",
+    "total_rec_",
+)
+
+
 class CreditDataPreprocessor:
     """Preprocess credit data without leaking validation or test information.
 
@@ -52,6 +193,7 @@ class CreditDataPreprocessor:
         target_column: str = "preloan_risk_label",
         low_cardinality_threshold: int = 10,
         excluded_columns: Iterable[str] | None = None,
+        feature_whitelist: Iterable[str] | None = None,
         target_smoothing: float = 20.0,
     ) -> None:
         """Initialize the credit data preprocessor."""
@@ -67,7 +209,12 @@ class CreditDataPreprocessor:
         }
         self.target_column = target_column
         self.low_cardinality_threshold = low_cardinality_threshold
-        self.excluded_columns = set(excluded_columns or default_excluded_columns)
+        self.excluded_columns = (
+            set(default_excluded_columns)
+            | POSTLOAN_LEAKAGE_EXACT_COLUMNS
+            | set(excluded_columns or set())
+        )
+        self.feature_whitelist = set(feature_whitelist or PRELOAN_FEATURE_WHITELIST)
         self.target_smoothing = target_smoothing
 
         self.feature_groups_: Dict[str, List[str]] = {
@@ -152,8 +299,19 @@ class CreditDataPreprocessor:
         return [
             column
             for column in frame.columns
-            if column not in self.excluded_columns and column != self.target_column
+            if self._is_allowed_feature(column)
         ]
+
+    def _is_allowed_feature(self, column: str) -> bool:
+        """Return whether a column can be used as a pre-loan model feature."""
+
+        if column == self.target_column or column in self.excluded_columns:
+            return False
+        if any(column.startswith(prefix) for prefix in POSTLOAN_LEAKAGE_PREFIXES):
+            return False
+        if self.feature_whitelist and column not in self.feature_whitelist:
+            return False
+        return True
 
     def _split_feature_types(self, frame: pd.DataFrame) -> None:
         """Split columns into categorical and continuous feature sets."""
