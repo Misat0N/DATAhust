@@ -1,0 +1,191 @@
+{
+  "rows": [
+    {
+      "model_name": "权重阈值网格:mild@0.50",
+      "macro_f1": 0.3875029738381344,
+      "weighted_f1": 0.47937511906665947,
+      "ks_value": 0.12909691970772819,
+      "normal_precision": 0.9924292297564187,
+      "high_risk_recall": 0.6668767676944093,
+      "config_key": "mild__manual_fixed__0.50__0.50__rules_on",
+      "class_weight_name": "mild",
+      "class_weight": "{\"0\": 1.0, \"1\": 2.0, \"2\": 6.0, \"3\": 10.0}",
+      "threshold_strategy": "manual_fixed",
+      "threshold_candidate": "0.50",
+      "normal_threshold": 0.5,
+      "use_business_rules": true,
+      "val_normal_precision": null,
+      "val_high_risk_recall": null,
+      "val_macro_f1": null,
+      "val_weighted_f1": null
+    }
+  ],
+  "details": {
+    "mild__manual_fixed__0.50__0.50__rules_on": {
+      "accuracy": 0.343325,
+      "precision_weighted": 0.9609033889029494,
+      "recall_weighted": 0.34332500000000005,
+      "f1_weighted": 0.47937511906665947,
+      "macro_f1": 0.3875029738381344,
+      "weighted_f1": 0.47937511906665947,
+      "f1_gap_weighted_minus_macro": 0.09187214522852505,
+      "classification_report": {
+        "0": {
+          "precision": 0.9924292297564187,
+          "recall": 0.31905605968411865,
+          "f1-score": 0.48287321575143644,
+          "support": 37799.0
+        },
+        "1": {
+          "precision": 0.05405405405405406,
+          "recall": 0.0076045627376425855,
+          "f1-score": 0.013333333333333334,
+          "support": 526.0
+        },
+        "2": {
+          "precision": 0.029772524531668152,
+          "recall": 0.9987531172069826,
+          "f1-score": 0.05782141052479607,
+          "support": 802.0
+        },
+        "3": {
+          "precision": 0.9977011494252873,
+          "recall": 0.9942726231386025,
+          "f1-score": 0.9959839357429718,
+          "support": 873.0
+        },
+        "accuracy": 0.343325,
+        "macro avg": {
+          "precision": 0.5184892394418571,
+          "recall": 0.5799215906918366,
+          "f1-score": 0.3875029738381344,
+          "support": 40000.0
+        },
+        "weighted avg": {
+          "precision": 0.9609033889029494,
+          "recall": 0.34332500000000005,
+          "f1-score": 0.47937511906665947,
+          "support": 40000.0
+        }
+      },
+      "classification_report_named": {
+        "正常类": {
+          "precision": 0.9924292297564187,
+          "recall": 0.31905605968411865,
+          "f1-score": 0.48287321575143644,
+          "support": 37799.0
+        },
+        "关注类": {
+          "precision": 0.05405405405405406,
+          "recall": 0.0076045627376425855,
+          "f1-score": 0.013333333333333334,
+          "support": 526.0
+        },
+        "次级/可疑类": {
+          "precision": 0.029772524531668152,
+          "recall": 0.9987531172069826,
+          "f1-score": 0.05782141052479607,
+          "support": 802.0
+        },
+        "损失类": {
+          "precision": 0.9977011494252873,
+          "recall": 0.9942726231386025,
+          "f1-score": 0.9959839357429718,
+          "support": 873.0
+        },
+        "accuracy": 0.343325,
+        "macro avg": {
+          "precision": 0.5184892394418571,
+          "recall": 0.5799215906918366,
+          "f1-score": 0.3875029738381344,
+          "support": 40000.0
+        },
+        "weighted avg": {
+          "precision": 0.9609033889029494,
+          "recall": 0.34332500000000005,
+          "f1-score": 0.47937511906665947,
+          "support": 40000.0
+        }
+      },
+      "confusion_matrix": [
+        [
+          12060,
+          70,
+          25669,
+          0
+        ],
+        [
+          92,
+          4,
+          429,
+          1
+        ],
+        [
+          0,
+          0,
+          801,
+          1
+        ],
+        [
+          0,
+          0,
+          5,
+          868
+        ]
+      ],
+      "auc_roc_per_class": {
+        "正常类": 0.6473072692222577,
+        "关注类": 0.5274337817971728,
+        "次级/可疑类": 0.6468157887336865,
+        "损失类": 0.5
+      },
+      "auc_roc_ovo_macro": 0.5571174600184875,
+      "auc_roc_ovo_weighted": 0.5989524982174844,
+      "ks_per_class": {
+        "正常类": 0.2169843262983177,
+        "关注类": 0.06901447956984152,
+        "次级/可疑类": 0.23038887296275357,
+        "损失类": 0.0
+      },
+      "ks_value": 0.12909691970772819,
+      "bad_rate_capture_per_class": {
+        "正常类": 0.20669858990978598,
+        "关注类": 0.24334600760456274,
+        "次级/可疑类": 0.36034912718204487,
+        "损失类": 0.2027491408934708
+      },
+      "bad_rate_capture": 0.2532857163974661,
+      "predicted_class_distribution": {
+        "正常类": 0.3038,
+        "关注类": 0.00185,
+        "次级/可疑类": 0.6726,
+        "损失类": 0.02175
+      },
+      "true_class_distribution": {
+        "正常类": 0.944975,
+        "关注类": 0.01315,
+        "次级/可疑类": 0.02005,
+        "损失类": 0.021825
+      },
+      "dominant_prediction_ratio": 0.6726,
+      "class_names": [
+        "正常类",
+        "关注类",
+        "次级/可疑类",
+        "损失类"
+      ],
+      "class_labels": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "plot_paths": {
+        "confusion_matrix": "results/figures/confusion_matrix_diagnosis.png",
+        "class_metrics": "results/figures/class_metrics_comparison.png",
+        "multiclass_roc_curve": "results/figures/multiclass_roc_curve.png"
+      }
+    }
+  },
+  "csv": "src/models/weighted_threshold_grid_search.csv"
+}

@@ -49,17 +49,20 @@ class CreditSampler:
         y_train: pd.Series | np.ndarray,
         sampling_strategy: str | dict[Any, int] = "auto",
         max_oversample_ratio: float = 5,
+        apply_enn: bool = True,
     ) -> tuple[pd.DataFrame, pd.Series]:
-        """Apply SMOTENC + ENN to the training set only.
+        """Apply SMOTENC (+ optional ENN) to the training set only.
 
         Processing steps
         ----------------
         1. Oversample minority classes with ``SMOTENC``.
-        2. Remove noisy samples with ``EditedNearestNeighbours``.
+        2. Optionally remove noisy samples with ``EditedNearestNeighbours``.
         3. Limit oversampling so that the post-SMOTE class size does not exceed
            ``max_oversample_ratio * max_original_minority_count``.
 
-        Validation and test sets must never be passed to this method.
+        When ``apply_enn`` is ``False`` the ENN cleaning step is skipped, which
+        is useful for heavily overlapping classes where ENN would delete most
+        of a minority class. Validation and test sets must never be passed in.
         """
 
         self._validate_sampling_config(
@@ -108,12 +111,20 @@ class CreditSampler:
             name="SMOTENC后",
         )
 
-        self.undersampler_ = EditedNearestNeighbours()
-        X_resampled, y_resampled = self.undersampler_.fit_resample(X_over, y_over)
-        self.after_distribution_ = self.get_sample_distribution(
-            y_resampled,
-            name="ENN后",
-        )
+        if apply_enn:
+            self.undersampler_ = EditedNearestNeighbours()
+            X_resampled, y_resampled = self.undersampler_.fit_resample(X_over, y_over)
+            self.after_distribution_ = self.get_sample_distribution(
+                y_resampled,
+                name="ENN后",
+            )
+        else:
+            self.undersampler_ = None
+            X_resampled, y_resampled = X_over, y_over
+            self.after_distribution_ = self.get_sample_distribution(
+                y_resampled,
+                name="纯SMOTE(跳过ENN)",
+            )
 
         X_resampled_frame = pd.DataFrame(
             X_resampled,

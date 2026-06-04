@@ -117,6 +117,83 @@ def estimate_overdue_days(frame: pd.DataFrame) -> pd.Series:
     return overdue_days.fillna(0).astype(int)
 
 
+TERMINAL_STATUSES = {
+    "fully paid",
+    "charged off",
+    "default",
+    "does not meet the credit policy. status:fully paid",
+    "does not meet the credit policy. status:charged off",
+}
+
+
+def parse_month_series(frame: pd.DataFrame, column: str) -> pd.Series:
+    """Parse a Lending Club ``Mon-YYYY`` date column into datetimes."""
+
+    if column not in frame.columns:
+        return pd.Series(pd.NaT, index=frame.index)
+    return pd.to_datetime(frame[column], format="%b-%Y", errors="coerce")
+
+
+def parse_term_months(frame: pd.DataFrame) -> pd.Series:
+    """Extract the loan term length in months from the ``term`` column."""
+
+    if "term" not in frame.columns:
+        return pd.Series(36.0, index=frame.index, dtype="float64")
+    return (
+        frame["term"]
+        .astype(str)
+        .str.extract(r"(\d+)")[0]
+        .astype("float64")
+        .fillna(36.0)
+    )
+
+
+def compute_maturity_mask(
+    frame: pd.DataFrame,
+    observation_date: pd.Timestamp | None = None,
+) -> pd.Series:
+    """Return a boolean mask marking records whose risk outcome is observable.
+
+    Rationale
+    ---------
+    Risk labels are derived from post-loan performance. Loans that are still
+    ``Current`` and have not yet reached their scheduled maturity are labeled
+    ``0`` (正常类) only because they have not had time to default. Keeping these
+    "not-yet-matured" records makes the recent (test) period look artificially
+    safe and trains the model to predict the normal class for everyone.
+
+    A record is considered observable when ANY of the following holds:
+    - Its ``loan_status`` is a terminal state (outcome already known).
+    - It already shows a delinquency signal (estimated overdue days > 0).
+    - Its scheduled maturity (``issue_d`` + ``term``) is on or before the
+      observation/snapshot date, i.e. it has had a full window to perform.
+    """
+
+    status = normalize_status_series(frame)
+    issue_date = parse_month_series(frame, "issue_d")
+    term_months = parse_term_months(frame)
+    scheduled_maturity = issue_date + pd.to_timedelta(term_months * 30, unit="D")
+
+    if observation_date is None:
+        last_pull = parse_month_series(frame, "last_credit_pull_d")
+        observation_date = last_pull.max()
+        if pd.isna(observation_date):
+            observation_date = issue_date.max()
+
+    terminal_mask = status.isin(TERMINAL_STATUSES)
+
+    overdue_days = (
+        frame["estimated_overdue_days"]
+        if "estimated_overdue_days" in frame.columns
+        else estimate_overdue_days(frame)
+    )
+    delinquency_mask = pd.Series(overdue_days, index=frame.index).fillna(0).gt(0)
+
+    matured_mask = scheduled_maturity.le(observation_date)
+
+    return (terminal_mask | delinquency_mask | matured_mask).fillna(False)
+
+
 def build_risk_labels(frame: pd.DataFrame, overdue_days: pd.Series) -> pd.DataFrame:
     """Create the formal 4-class pre-loan risk label.
 

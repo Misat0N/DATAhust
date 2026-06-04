@@ -521,7 +521,10 @@ def save_grid_search_outputs(
         encoding="utf-8",
     )
 
-    top_table = grid_df.head(15).to_markdown(index=False)
+    try:
+        top_table = grid_df.head(15).to_markdown(index=False)
+    except ImportError:
+        top_table = "```text\n" + grid_df.head(15).to_string(index=False) + "\n```"
     report_lines = [
         "# 权重阈值网格搜索报告",
         "",

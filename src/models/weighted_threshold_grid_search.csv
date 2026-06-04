@@ -1,0 +1,2 @@
+﻿model_name,macro_f1,weighted_f1,ks_value,normal_precision,high_risk_recall,config_key,class_weight_name,class_weight,threshold_strategy,threshold_candidate,normal_threshold,use_business_rules,val_normal_precision,val_high_risk_recall,val_macro_f1,val_weighted_f1
+权重阈值网格:mild@0.50,0.3875029738381344,0.47937511906665947,0.12909691970772819,0.9924292297564187,0.6668767676944093,mild__manual_fixed__0.50__0.50__rules_on,mild,"{""0"": 1.0, ""1"": 2.0, ""2"": 6.0, ""3"": 10.0}",manual_fixed,0.50,0.5,True,,,,

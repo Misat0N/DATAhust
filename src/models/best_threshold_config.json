@@ -1,8 +1,17 @@
 {
-  "status": "pending_four_class_rerun",
-  "description": "The previous threshold result is no longer authoritative after switching to the 4_class_merge_23 scheme. Re-run notebooks/08_threshold_rule_optimization.ipynb to overwrite this file.",
-  "best_threshold": 0.9,
+  "status": "finalized_four_class",
+  "description": "Final normal-class threshold selected under the 4_class_merge_23 scheme via scripts/run_final_comparison_low_resource.py grid search. Verified on a 150k/40k/40k split.",
+  "scheme": "4_class_merge_23",
+  "best_threshold": 0.5,
+  "use_business_rules": true,
   "search_constraint": {
     "min_normal_precision": 0.8
+  },
+  "final_metrics_150k_split": {
+    "weighted_f1": 0.4794,
+    "macro_f1": 0.3875,
+    "high_risk_recall": 0.6669,
+    "normal_precision": 0.9924,
+    "ks_value": 0.1291
   }
 }
