@@ -85,6 +85,21 @@ def extract_mean_abs_shap(shap_values, n_features: int) -> np.ndarray:
     return np.abs(arr).mean(axis=0)
 
 
+def extract_class_shap_matrix(shap_values, class_index: int, n_features: int) -> np.ndarray:
+    """Return the (n_samples, n_features) SHAP matrix for one class."""
+
+    if isinstance(shap_values, list):
+        return np.asarray(shap_values[class_index])
+    arr = np.asarray(shap_values)
+    if arr.ndim == 3:
+        if arr.shape[1] == n_features:
+            # (n_samples, n_features, n_classes)
+            return arr[:, :, class_index]
+        # (n_classes, n_samples, n_features)
+        return arr[class_index]
+    return arr
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Recompute SHAP for final 3-class model.")
     parser.add_argument("--train-limit", type=int, default=120000)
@@ -93,6 +108,12 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--shap-sample", type=int, default=2000)
     parser.add_argument("--max-display", type=int, default=20)
+    parser.add_argument(
+        "--focus-class",
+        type=int,
+        default=2,
+        help="Class index for the beeswarm plot (0 正常 / 1 风险关注 / 2 损失). Default 2.",
+    )
     args = parser.parse_args()
 
     print("Loading datasets ...")
@@ -136,17 +157,25 @@ def main() -> None:
     importance_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
     print(f"Saved: {csv_path}")
 
-    top_df = importance_df.head(args.max_display).iloc[::-1]
-    fig, ax = plt.subplots(figsize=(10, 8))
-    ax.barh(
-        top_df["feature"],
-        top_df["mean_abs_shap"],
-        color=plt.cm.Blues(np.linspace(0.45, 0.9, len(top_df))),
+    # Beeswarm summary plot for the focus class (default: 损失类).
+    class_matrix = extract_class_shap_matrix(shap_values, args.focus_class, len(feature_names))
+    plt.figure(figsize=(10, 8))
+    shap.summary_plot(
+        class_matrix,
+        feature_sample,
+        feature_names=feature_names,
+        max_display=args.max_display,
+        plot_type="dot",
+        color_bar=True,
+        show=False,
     )
-    ax.set_xlabel("平均 |SHAP| 值（跨三类聚合）")
-    ax.set_title("最终三分类风险模型特征重要性（SHAP）")
-    ax.grid(axis="x", linestyle="--", alpha=0.3)
-    fig.tight_layout()
+    fig = plt.gcf()
+    fig.suptitle(
+        f"最终三分类风险模型 SHAP 蜂群图（聚焦：{CLASS_NAMES_3[args.focus_class]}）",
+        fontsize=15,
+        fontweight="bold",
+        y=1.02,
+    )
     summary_path = ARTICLE_DIR / "shap_summary_plot.png"
     fig.savefig(summary_path, dpi=220, bbox_inches="tight")
     plt.close(fig)
